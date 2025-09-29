@@ -7,25 +7,35 @@ Original file is located at
     https://colab.research.google.com/drive/15xSzM5rKsNfw8oqk_JqC9NzmD89_74p_
 """
 
+# =========================
 import streamlit as st
 from datetime import date, timedelta
 import sqlite3
 import pandas as pd
-import pyttsx3
 from sentence_transformers import SentenceTransformer, util
+from gtts import gTTS
+from io import BytesIO
 
 # =========================
-# إعداد الصفحة
-# =========================
+# إعداد الصفحة مع ثيم للهواتف
 st.set_page_config(
     page_title="المنظم الأكاديمي الذكي",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+st.markdown("""
+<style>
+body { background-color: #f4f4f9; }
+h1,h2,h3 { color: #003366; }
+.stTable td, .stTable th { text-align: center; font-size:14px;}
+.stButton>button { background-color: #0055cc; color: white; font-size: 16px; border-radius: 10px; padding: 8px 16px; }
+.stButton>button:hover { background-color: #003366; color: #ffffff; }
+</style>
+""", unsafe_allow_html=True)
+
 # =========================
-# قاعدة بيانات في الذاكرة + seed
-# =========================
+# قاعدة بيانات في الذاكرة
 @st.cache_resource
 def init_db():
     conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -56,10 +66,6 @@ def init_db():
         Priority TEXT,
         Done INTEGER DEFAULT 0
     );
-    CREATE TABLE Embeddings (
-        TaskID INTEGER PRIMARY KEY,
-        Embedding BLOB
-    );
     """)
     return conn, cur
 
@@ -84,7 +90,6 @@ def seed_demo(cur):
 
 # =========================
 # دوال مساعدة
-# =========================
 def authenticate(cur, username, password):
     cur.execute("SELECT StudentID, FullName, Department FROM Students WHERE Username=? AND Password=?", (username, password))
     return cur.fetchone()
@@ -100,27 +105,8 @@ def fetch_tasks(cur, student_id):
 def update_task_done(cur, task_id):
     cur.execute("UPDATE Tasks SET Done=1 WHERE TaskID=?", (task_id,))
 
-def get_upcoming_tasks(tasks, days=3):
-    now = date.today()
-    return [t for t in tasks if not t[5] and now <= date.fromisoformat(t[2]) <= now+timedelta(days=days)]
-
-def get_overdue_tasks(tasks):
-    now = date.today()
-    return [t for t in tasks if not t[5] and date.fromisoformat(t[2]) < now]
-
-def summarize_week(tasks):
-    today = date.today()
-    week_end = today + timedelta(days=7)
-    week_tasks = [t for t in tasks if today <= date.fromisoformat(t[2]) <= week_end and not t[5]]
-    return week_tasks
-
-def plan_study(tasks):
-    plan = sorted([t for t in tasks if not t[5]], key=lambda x: (x[4], x[2]))
-    return plan
-
 # =========================
-# إعداد نموذج Embeddings للبحث الدلالي
-# =========================
+# البحث الدلالي
 @st.cache_resource
 def init_embeddings():
     model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -137,19 +123,20 @@ def semantic_search(query, tasks, model):
     return results
 
 # =========================
-# مساعد صوتي
-# =========================
+# مساعد صوتي عبر gTTS
 def speak(text):
-    engine = pyttsx3.init()
-    engine.say(text)
-    engine.runAndWait()
+    tts = gTTS(text, lang='ar')
+    mp3_fp = BytesIO()
+    tts.write_to_fp(mp3_fp)
+    mp3_fp.seek(0)
+    st.audio(mp3_fp, format="audio/mp3")
 
 # =========================
 # التطبيق الرئيسي
-# =========================
 def main():
     st.title("📘 المنظم الأكاديمي الذكي")
 
+    # تهيئة قاعدة البيانات
     if "db_init" not in st.session_state:
         conn, cur = init_db()
         seed_demo(cur)
@@ -177,47 +164,60 @@ def main():
 
     student_id = st.session_state.student["id"]
 
-    st.subheader(f"مرحبا {st.session_state.student['name']} — {st.session_state.student['dept']}")
+    st.sidebar.title(f"👋 أهلا {st.session_state.student['name']}")
+    st.sidebar.subheader("قائمة المميزات")
+    feature = st.sidebar.radio("اختر ميزة", [
+        "جدول الأسبوع",
+        "المهام",
+        "تحديث المهام",
+        "بحث دلالي",
+        "مساعد صوتي",
+        "Google Calendar"
+    ])
 
-    # جدول و مهام
-    schedule = fetch_schedule(cur, student_id)
     tasks = fetch_tasks(cur, student_id)
+    schedule = fetch_schedule(cur, student_id)
 
-    st.write("### 🗓 جدول الأسبوع")
-    st.table(pd.DataFrame(schedule, columns=["اليوم","الساعة من","الساعة إلى","المادة","الغرفة"]))
-
-    st.write("### ✅ المهام")
-    st.table(pd.DataFrame(tasks, columns=["ID","العنوان","تاريخ التسليم","الساعات المقدرة","الأولوية","تم الإنجاز"]))
-
-    # تحديث حالة المهام
-    st.write("### تحديث المهام المكتملة")
-    for t in tasks:
-        if not t[5]:
-            if st.button(f"تم إنجاز: {t[1]}", key=t[0]):
-                update_task_done(cur, t[0])
-                st.success(f"تم تحديث المهمة: {t[1]}")
-
-    # البحث الدلالي
-    st.write("### 🔍 بحث دلالي عن المهام")
     model = init_embeddings()
-    query = st.text_input("اكتب نص للبحث عن مهمة")
-    if query:
-        results = semantic_search(query, tasks, model)
-        for r in results:
-            st.info(f"{r[1]} — تسليم: {r[2]}")
 
-    # مساعد صوتي
-    st.write("### 🎤 مساعد صوتي")
-    text_to_speak = st.text_input("اكتب نص لتحويله للصوت")
-    if st.button("🔊 تشغيل الصوت"):
-        speak(text_to_speak)
+    if feature == "جدول الأسبوع":
+        st.subheader("🗓 جدول الأسبوع")
+        st.table(pd.DataFrame(schedule, columns=["اليوم","الساعة من","الساعة إلى","المادة","الغرفة"]))
 
-    # Google Calendar رابط
-    st.write("### 📅 إضافة المهام إلى Google Calendar")
-    for t in tasks:
-        if not t[5]:
-            gcal_link = f"https://calendar.google.com/calendar/render?action=TEMPLATE&text={t[1]}&dates={t[2].replace('-','')}T090000Z/{t[2].replace('-','')}T100000Z"
-            st.markdown(f"[➕ إضافة {t[1]}]( {gcal_link} )", unsafe_allow_html=True)
+    elif feature == "المهام":
+        st.subheader("✅ المهام")
+        st.table(pd.DataFrame(tasks, columns=["ID","العنوان","تاريخ التسليم","الساعات المقدرة","الأولوية","تم الإنجاز"]))
+
+    elif feature == "تحديث المهام":
+        st.subheader("🔄 تحديث المهام المكتملة")
+        for t in tasks:
+            if not t[5]:
+                if st.button(f"تم إنجاز: {t[1]}", key=t[0]):
+                    update_task_done(cur, t[0])
+                    st.success(f"تم تحديث المهمة: {t[1]}")
+
+    elif feature == "بحث دلالي":
+        st.subheader("🔍 بحث دلالي عن المهام")
+        query = st.text_input("اكتب نص للبحث عن مهمة")
+        if query:
+            results = semantic_search(query, tasks, model)
+            for r in results:
+                st.info(f"{r[1]} — تسليم: {r[2]}")
+                if st.button(f"🔊 استمع للمهمة: {r[1]}", key=f"audio{r[0]}"):
+                    speak(r[1])
+
+    elif feature == "مساعد صوتي":
+        st.subheader("🎤 مساعد صوتي")
+        text_to_speak = st.text_area("اكتب نص لتحويله للصوت")
+        if st.button("🔊 تشغيل الصوت"):
+            speak(text_to_speak)
+
+    elif feature == "Google Calendar":
+        st.subheader("📅 إضافة المهام إلى Google Calendar")
+        for t in tasks:
+            if not t[5]:
+                gcal_link = f"https://calendar.google.com/calendar/render?action=TEMPLATE&text={t[1]}&dates={t[2].replace('-','')}T090000Z/{t[2].replace('-','')}T100000Z"
+                st.markdown(f"[➕ إضافة {t[1]}]( {gcal_link} )", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
