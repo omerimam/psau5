@@ -1,8 +1,6 @@
 streamlit
 pandas
-numpy
-sqlite3
 sentence-transformers
 scikit-learn
-pyttsx3
-gTTS
+torch
+numpy
