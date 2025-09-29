@@ -4,3 +4,6 @@ sentence-transformers
 scikit-learn
 torch
 numpy
+gTTS
+
+
